@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NBM Snow & Precipitation - Ski Resort Forecast</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+</head>
+<body>
+    <header>
+        <nav class="navbar">
+            <div class="nav-brand">
+                <h1>NBM Snow Forecast</h1>
+            </div>
+            <div class="nav-links">
+                <a href="#home">Home</a>
+                <a href="#documentation">Documentation</a>
+                <a href="#data">Browse Data</a>
+            </div>
+        </nav>
+    </header>
+
+    <main class="container">
+        <section class="intro">
+            <h2>Snow and Precipitation Forecasts by Ski Resort</h2>
+            <p>Probabilistic forecasts using National Blend of Models (NBM) GRIB data.
+            The charts below show multiple probability levels: 10%, 50%, 90%, and 95%.
+            For example, if the 90% probability line shows 10mm, there's a 90% likelihood
+            that snowfall will be at or below that threshold.</p>
+        </section>
+
+        <section class="resort-selector">
+            <label for="resort-select">Select Ski Resort:</label>
+            <select id="resort-select">
+                <option value="default">Loading resorts...</option>
+            </select>
+            <div class="resort-info">
+                <span id="resort-elevation"></span>
+                <span id="resort-coords"></span>
+            </div>
+        </section>
+
+        <section class="charts-grid">
+            <div class="chart-container">
+                <h3>Hourly Snow Accumulation</h3>
+                <p class="chart-description">Snowfall per hour with probability bands</p>
+                <div id="hourly-snow-chart"></div>
+            </div>
+
+            <div class="chart-container">
+                <h3>Running Total Snow</h3>
+                <p class="chart-description">Cumulative snowfall across forecast period</p>
+                <div id="total-snow-chart"></div>
+            </div>
+
+            <div class="chart-container">
+                <h3>Hourly Precipitation</h3>
+                <p class="chart-description">Combined rain and snow precipitation per hour</p>
+                <div id="hourly-precip-chart"></div>
+            </div>
+
+            <div class="chart-container">
+                <h3>Snow Level Forecast</h3>
+                <p class="chart-description">Wet-bulb zero elevation (meters above sea level).
+                If resort elevation is higher than snow level, expect snow at the surface.</p>
+                <div id="snow-level-chart"></div>
+            </div>
+
+            <div class="chart-container">
+                <h3>Cumulative Precipitation</h3>
+                <p class="chart-description">Total precipitation running total</p>
+                <div id="cumulative-precip-chart"></div>
+            </div>
+        </section>
+
+        <section class="legend-info">
+            <h4>Understanding Probability Bands</h4>
+            <ul>
+                <li><strong>95% Line:</strong> There's a 95% chance the actual value will be at or below this level</li>
+                <li><strong>90% Line:</strong> There's a 90% chance the actual value will be at or below this level</li>
+                <li><strong>50% Line (Median):</strong> Equally likely to be above or below this value</li>
+                <li><strong>10% Line:</strong> There's only a 10% chance the actual value will be at or below this level</li>
+            </ul>
+        </section>
+
+        <section class="data-update">
+            <p>Last Updated: <span id="last-update">Loading...</span></p>
+            <p>Data refreshes automatically every hour</p>
+        </section>
+    </main>
+
+    <footer>
+        <div class="footer-content">
+            <div class="footer-links">
+                <a href="mailto:support@example.com">Email Support</a>
+                <a href="#">Discord</a>
+                <a href="#">Twitter/X</a>
+                <a href="#">Reddit</a>
+            </div>
+            <div class="footer-info">
+                <p>Data source: NOAA National Blend of Models (NBM)</p>
+                <p>&copy; 2024 NBM Ski Resort Data Viewer</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="ski-resorts.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

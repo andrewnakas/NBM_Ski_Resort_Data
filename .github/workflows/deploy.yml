@@ -5,6 +5,9 @@ on:
     branches:
       - 'claude/**'
       - main
+  schedule:
+    # Run every hour at minute 15
+    - cron: '15 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -28,6 +31,11 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
+
+      - name: Install system dependencies for GRIB2 processing
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libeccodes-dev libeccodes-tools
 
       - name: Install dependencies
         run: |

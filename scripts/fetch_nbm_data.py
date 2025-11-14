@@ -6,8 +6,9 @@ This script downloads National Blend of Models (NBM) GRIB2 data from NOAA,
 extracts probabilistic forecasts for snow, precipitation, and snow level,
 and generates JSON data for the web visualization.
 
-Incremental downloading: Downloads only 3 GRIB files per run to avoid timeouts.
+Incremental downloading: Downloads only 1 GRIB file per run to avoid timeouts.
 State is tracked so subsequent runs continue where the last run left off.
+Complete dataset builds up over 24 hourly runs.
 """
 
 import os
@@ -24,7 +25,7 @@ import time
 NBM_BASE_URL = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/blend/prod"
 
 # Configuration
-FILES_PER_RUN = 3  # Download only 3 files per run to avoid timeout
+FILES_PER_RUN = 1  # Download only 1 file per run to avoid timeout
 
 # Create output directories
 os.makedirs('public/data', exist_ok=True)
@@ -93,7 +94,8 @@ def get_next_hours_to_download(state, cycle_time, all_hours):
     next_batch = remaining[:FILES_PER_RUN]
 
     print(f"Progress: {len(state['downloaded_hours'])}/{len(all_hours)} files downloaded")
-    print(f"Downloading next {len(next_batch)} files: {next_batch}")
+    if next_batch:
+        print(f"Downloading next file: f{next_batch[0]:03d}")
 
     return next_batch
 
@@ -321,7 +323,10 @@ def fetch_nbm_grib_data_incremental(cycle_time, lat, lon, state):
                 state['downloaded_hours'].append(fhr)
                 state['downloaded_hours'].sort()
 
-        print(f"\n✓ Successfully downloaded {success_count} new files")
+        if success_count > 0:
+            print(f"\n✓ Successfully downloaded and processed {success_count} file(s)")
+        else:
+            print(f"\n⚠ No files were successfully downloaded this run")
 
         # Save updated state
         state['partial_data'] = three_hourly_data

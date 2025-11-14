@@ -5,10 +5,9 @@ on:
     branches:
       - 'claude/**'
       - main
-  schedule:
-    # Run every hour to download complete 24-file dataset
-    # Downloads all 24 GRIB files in one run (~30-45 min per run)
-    - cron: '15 * * * *'
+  # Cron schedule disabled for manual testing
+  # schedule:
+  #   - cron: '15 * * * *'
   workflow_dispatch:
 
 permissions:

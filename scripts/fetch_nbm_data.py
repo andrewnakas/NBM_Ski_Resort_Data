@@ -5,6 +5,9 @@ Fetch and process NBM GRIB2 data for ski resort forecasts.
 This script downloads National Blend of Models (NBM) GRIB2 data from NOAA,
 extracts probabilistic forecasts for snow, precipitation, and snow level,
 and generates JSON data for the web visualization.
+
+Incremental downloading: Downloads only 3 GRIB files per run to avoid timeouts.
+State is tracked so subsequent runs continue where the last run left off.
 """
 
 import os
@@ -20,9 +23,13 @@ import time
 # NOAA NBM GRIB2 data URL patterns
 NBM_BASE_URL = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/blend/prod"
 
+# Configuration
+FILES_PER_RUN = 3  # Download only 3 files per run to avoid timeout
+
 # Create output directories
 os.makedirs('public/data', exist_ok=True)
 os.makedirs('data/cache', exist_ok=True)
+os.makedirs('data/state', exist_ok=True)
 
 
 def get_latest_nbm_cycle():
@@ -39,6 +46,56 @@ def get_latest_nbm_cycle():
         cycle_time -= timedelta(hours=6)
 
     return cycle_time
+
+
+def load_state():
+    """Load the download state from file."""
+    state_file = 'data/state/download_state.json'
+    if os.path.exists(state_file):
+        try:
+            with open(state_file, 'r') as f:
+                return json.load(f)
+        except:
+            pass
+    return {
+        'cycle': None,
+        'downloaded_hours': [],
+        'partial_data': []
+    }
+
+
+def save_state(state):
+    """Save the download state to file."""
+    state_file = 'data/state/download_state.json'
+    with open(state_file, 'w') as f:
+        json.dump(state, f, indent=2)
+
+
+def get_next_hours_to_download(state, cycle_time, all_hours):
+    """
+    Determine which forecast hours to download next.
+    Returns up to FILES_PER_RUN hours.
+    """
+    cycle_str = cycle_time.isoformat()
+
+    # If this is a new cycle, reset downloaded hours
+    if state['cycle'] != cycle_str:
+        print(f"New model cycle detected: {cycle_str}")
+        state['cycle'] = cycle_str
+        state['downloaded_hours'] = []
+        state['partial_data'] = []
+        save_state(state)
+
+    # Find hours not yet downloaded
+    remaining = [h for h in all_hours if h not in state['downloaded_hours']]
+
+    # Return next batch
+    next_batch = remaining[:FILES_PER_RUN]
+
+    print(f"Progress: {len(state['downloaded_hours'])}/{len(all_hours)} files downloaded")
+    print(f"Downloading next {len(next_batch)} files: {next_batch}")
+
+    return next_batch
 
 
 def download_nbm_file(cycle_time, forecast_hour):
@@ -185,86 +242,96 @@ def extract_data_at_point(grib_file, lat, lon):
         return None
 
 
-def fetch_nbm_grib_data(cycle_time, lat, lon):
+def fetch_nbm_grib_data_incremental(cycle_time, lat, lon, state):
     """
-    Fetch NBM GRIB2 data for a specific location.
+    Fetch NBM GRIB2 data incrementally (only FILES_PER_RUN files per run).
 
-    Downloads forecast files at 3-hour intervals and interpolates hourly values.
-    This is much faster than downloading all 72 hourly files.
+    Downloads forecast files at 3-hour intervals and saves progress to state.
+    Subsequent runs continue where the last run left off.
     """
     print(f"Fetching NBM data for cycle: {cycle_time.strftime('%Y-%m-%d %H:%M UTC')}")
     print(f"Location: {lat}°N, {lon}°E")
 
-    # Fetch forecasts every 3 hours (much faster than every hour)
-    # We'll interpolate to get hourly values
-    forecast_hours = list(range(1, 73, 3))  # 1, 4, 7, 10, ... 70
-    print(f"Downloading {len(forecast_hours)} GRIB2 files (every 3 hours)...")
+    # All forecast hours we want (every 3 hours for 72 hours)
+    all_forecast_hours = list(range(1, 73, 3))  # 1, 4, 7, 10, ... 70
 
-    # Storage for 3-hourly data
-    three_hourly_data = []
-    prev_snow = {'p10': 0, 'p50': 0, 'p90': 0, 'p95': 0}
-    prev_precip = {'p10': 0, 'p50': 0, 'p90': 0, 'p95': 0}
-    success_count = 0
-    max_failures = 5
-    failure_count = 0
-    start_time = time.time()
-    max_runtime = 480  # 8 minutes max
+    # Get next batch to download
+    hours_to_download = get_next_hours_to_download(state, cycle_time, all_forecast_hours)
 
-    for fhr in forecast_hours:
-        # Check runtime - if taking too long, stop and use what we have
-        if time.time() - start_time > max_runtime:
-            print(f"\n⚠ Runtime limit reached, using {success_count} data points collected so far")
-            break
+    if not hours_to_download:
+        print("✓ All files already downloaded for this cycle!")
+        # Use existing data from state
+        three_hourly_data = state.get('partial_data', [])
+    else:
+        # Load existing data from state
+        three_hourly_data = state.get('partial_data', [])
 
-        if failure_count >= max_failures:
-            print(f"\n✗ Too many failures ({max_failures}), stopping downloads")
-            break
+        # Download new files
+        prev_snow = {'p10': 0, 'p50': 0, 'p90': 0, 'p95': 0}
+        prev_precip = {'p10': 0, 'p50': 0, 'p90': 0, 'p95': 0}
 
-        # Download GRIB file
-        grib_file = download_nbm_file(cycle_time, fhr)
-
-        if grib_file is None:
-            failure_count += 1
-            continue
-
-        # Extract data
-        data = extract_data_at_point(grib_file, lat, lon)
-
-        if data and data['snow']:
-            success_count += 1
-
-            point_data = {
-                'hour': fhr,
-                'snow': {},
-                'precip': {},
-                'snow_level': {}
-            }
-
-            # Calculate 3-hourly increments from accumulated values
+        # Initialize accumulated values from existing data
+        if three_hourly_data:
+            last_point = three_hourly_data[-1]
             for key in ['p10', 'p50', 'p90', 'p95']:
-                # Snow (convert from kg/m² to mm, roughly 1:10 ratio for snow)
-                acc_snow = data['snow'].get(key, prev_snow[key])
-                three_hourly_val = max(0, acc_snow - prev_snow[key])
-                point_data['snow'][key] = three_hourly_val * 10  # Convert to mm snow
-                prev_snow[key] = acc_snow
+                # Reconstruct accumulated values
+                prev_snow[key] = sum(p['snow'][key] for p in three_hourly_data) / 10  # reverse conversion
+                prev_precip[key] = sum(p['precip'][key] for p in three_hourly_data)
 
-                # Precipitation (convert from kg/m² to mm, 1:1 ratio)
-                acc_precip = data['precip'].get(key, prev_precip[key])
-                three_hourly_val = max(0, acc_precip - prev_precip[key])
-                point_data['precip'][key] = three_hourly_val
-                prev_precip[key] = acc_precip
+        success_count = 0
+        for fhr in hours_to_download:
+            # Download GRIB file
+            grib_file = download_nbm_file(cycle_time, fhr)
 
-                # Snow level (already in meters)
-                point_data['snow_level'][key] = data['snow_level'].get(key, 2000)
+            if grib_file is None:
+                print(f"  Skipping hour {fhr} (download failed)")
+                continue
 
-            three_hourly_data.append(point_data)
-        else:
-            failure_count += 1
+            # Extract data
+            data = extract_data_at_point(grib_file, lat, lon)
 
-    print(f"\n✓ Successfully processed {success_count}/{len(forecast_hours)} forecast periods")
+            if data and data['snow']:
+                success_count += 1
 
-    # If we got too few data points, fall back to sample data
-    if success_count < 5:
+                point_data = {
+                    'hour': fhr,
+                    'snow': {},
+                    'precip': {},
+                    'snow_level': {}
+                }
+
+                # Calculate 3-hourly increments from accumulated values
+                for key in ['p10', 'p50', 'p90', 'p95']:
+                    # Snow (convert from kg/m² to mm, roughly 1:10 ratio for snow)
+                    acc_snow = data['snow'].get(key, prev_snow[key])
+                    three_hourly_val = max(0, acc_snow - prev_snow[key])
+                    point_data['snow'][key] = three_hourly_val * 10  # Convert to mm snow
+                    prev_snow[key] = acc_snow
+
+                    # Precipitation (convert from kg/m² to mm, 1:1 ratio)
+                    acc_precip = data['precip'].get(key, prev_precip[key])
+                    three_hourly_val = max(0, acc_precip - prev_precip[key])
+                    point_data['precip'][key] = three_hourly_val
+                    prev_precip[key] = acc_precip
+
+                    # Snow level (already in meters)
+                    point_data['snow_level'][key] = data['snow_level'].get(key, 2000)
+
+                three_hourly_data.append(point_data)
+                state['downloaded_hours'].append(fhr)
+                state['downloaded_hours'].sort()
+
+        print(f"\n✓ Successfully downloaded {success_count} new files")
+
+        # Save updated state
+        state['partial_data'] = three_hourly_data
+        save_state(state)
+
+    # Sort data by hour
+    three_hourly_data.sort(key=lambda x: x['hour'])
+
+    # If we have very little data, fall back to sample
+    if len(three_hourly_data) < 3:
         print("✗ Insufficient real data, using sample data")
         return generate_sample_forecast_data()
 
@@ -406,8 +473,12 @@ def generate_sample_forecast_data():
 def main():
     """Main execution function."""
     print("=" * 70)
-    print("NBM Ski Resort Data Fetcher")
+    print("NBM Ski Resort Data Fetcher (Incremental Mode)")
+    print(f"Downloads {FILES_PER_RUN} files per run")
     print("=" * 70)
+
+    # Load state
+    state = load_state()
 
     # Get latest model cycle
     cycle = get_latest_nbm_cycle()
@@ -417,9 +488,9 @@ def main():
     default_lat = 39.6403
     default_lon = -106.3742
 
-    # Fetch and process data
+    # Fetch and process data incrementally
     try:
-        forecast_data = fetch_nbm_grib_data(cycle, default_lat, default_lon)
+        forecast_data = fetch_nbm_grib_data_incremental(cycle, default_lat, default_lon, state)
 
         # Save to JSON file
         output_file = 'public/data/forecast.json'

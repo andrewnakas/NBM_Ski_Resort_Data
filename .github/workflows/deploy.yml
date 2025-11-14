@@ -26,6 +26,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Restore download state and cache
+        uses: actions/cache@v3
+        with:
+          path: |
+            data/cache
+            data/state
+          key: nbm-data-${{ github.run_id }}
+          restore-keys: |
+            nbm-data-
+
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
@@ -42,7 +52,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Fetch and process NBM data
-        timeout-minutes: 10
+        timeout-minutes: 5
         run: |
           python scripts/fetch_nbm_data.py
 

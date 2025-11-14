@@ -31,8 +31,9 @@ env/
 *.grb2
 *.idx
 
-# Data cache
+# Data cache and state
 data/cache/
+data/state/
 *.tmp
 
 # IDE

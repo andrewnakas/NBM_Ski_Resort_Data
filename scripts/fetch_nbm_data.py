@@ -15,6 +15,7 @@ import numpy as np
 import pygrib
 import tempfile
 import shutil
+import time
 
 # NOAA NBM GRIB2 data URL patterns
 NBM_BASE_URL = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/blend/prod"
@@ -67,18 +68,22 @@ def download_nbm_file(cycle_time, forecast_hour):
         print(f"  Using cached: {filename}")
         return local_file
 
-    print(f"  Downloading: {filename}")
+    print(f"  Downloading: {filename}", end=' ', flush=True)
     try:
-        response = requests.get(url, timeout=30, stream=True)
+        response = requests.get(url, timeout=60, stream=True)
         response.raise_for_status()
 
         with open(local_file, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
 
+        print("✓")
         return local_file
+    except requests.exceptions.Timeout:
+        print("✗ (timeout)")
+        return None
     except Exception as e:
-        print(f"  ✗ Failed to download {filename}: {e}")
+        print(f"✗ ({str(e)[:50]})")
         return None
 
 
@@ -184,37 +189,42 @@ def fetch_nbm_grib_data(cycle_time, lat, lon):
     """
     Fetch NBM GRIB2 data for a specific location.
 
-    Downloads hourly forecast files and extracts probabilistic forecasts.
+    Downloads forecast files at 3-hour intervals and interpolates hourly values.
+    This is much faster than downloading all 72 hourly files.
     """
     print(f"Fetching NBM data for cycle: {cycle_time.strftime('%Y-%m-%d %H:%M UTC')}")
     print(f"Location: {lat}°N, {lon}°E")
 
-    # Fetch first 72 hours of forecasts (3 days)
-    forecast_hours = list(range(1, 73))
+    # Fetch forecasts every 3 hours (much faster than every hour)
+    # We'll interpolate to get hourly values
+    forecast_hours = list(range(1, 73, 3))  # 1, 4, 7, 10, ... 70
+    print(f"Downloading {len(forecast_hours)} GRIB2 files (every 3 hours)...")
 
-    timestamps = []
-    hourly_snow = {'p10': [], 'p50': [], 'p90': [], 'p95': []}
-    hourly_precip = {'p10': [], 'p50': [], 'p90': [], 'p95': []}
-    snow_level = {'p10': [], 'p50': [], 'p90': [], 'p95': []}
-
+    # Storage for 3-hourly data
+    three_hourly_data = []
     prev_snow = {'p10': 0, 'p50': 0, 'p90': 0, 'p95': 0}
     prev_precip = {'p10': 0, 'p50': 0, 'p90': 0, 'p95': 0}
-
     success_count = 0
+    max_failures = 5
+    failure_count = 0
+    start_time = time.time()
+    max_runtime = 480  # 8 minutes max
 
     for fhr in forecast_hours:
-        valid_time = cycle_time + timedelta(hours=fhr)
-        timestamps.append(valid_time.isoformat() + 'Z')
+        # Check runtime - if taking too long, stop and use what we have
+        if time.time() - start_time > max_runtime:
+            print(f"\n⚠ Runtime limit reached, using {success_count} data points collected so far")
+            break
+
+        if failure_count >= max_failures:
+            print(f"\n✗ Too many failures ({max_failures}), stopping downloads")
+            break
 
         # Download GRIB file
         grib_file = download_nbm_file(cycle_time, fhr)
 
         if grib_file is None:
-            # Use previous values if download fails
-            for key in ['p10', 'p50', 'p90', 'p95']:
-                hourly_snow[key].append(0)
-                hourly_precip[key].append(0)
-                snow_level[key].append(2000)
+            failure_count += 1
             continue
 
         # Extract data
@@ -223,30 +233,93 @@ def fetch_nbm_grib_data(cycle_time, lat, lon):
         if data and data['snow']:
             success_count += 1
 
-            # Calculate hourly increments from accumulated values
+            point_data = {
+                'hour': fhr,
+                'snow': {},
+                'precip': {},
+                'snow_level': {}
+            }
+
+            # Calculate 3-hourly increments from accumulated values
             for key in ['p10', 'p50', 'p90', 'p95']:
                 # Snow (convert from kg/m² to mm, roughly 1:10 ratio for snow)
                 acc_snow = data['snow'].get(key, prev_snow[key])
-                hourly_val = max(0, acc_snow - prev_snow[key])
-                hourly_snow[key].append(hourly_val * 10)  # Convert to mm snow
+                three_hourly_val = max(0, acc_snow - prev_snow[key])
+                point_data['snow'][key] = three_hourly_val * 10  # Convert to mm snow
                 prev_snow[key] = acc_snow
 
                 # Precipitation (convert from kg/m² to mm, 1:1 ratio)
                 acc_precip = data['precip'].get(key, prev_precip[key])
-                hourly_val = max(0, acc_precip - prev_precip[key])
-                hourly_precip[key].append(hourly_val)
+                three_hourly_val = max(0, acc_precip - prev_precip[key])
+                point_data['precip'][key] = three_hourly_val
                 prev_precip[key] = acc_precip
 
                 # Snow level (already in meters)
-                snow_level[key].append(data['snow_level'].get(key, 2000))
+                point_data['snow_level'][key] = data['snow_level'].get(key, 2000)
+
+            three_hourly_data.append(point_data)
         else:
-            # Fallback to zeros/defaults
+            failure_count += 1
+
+    print(f"\n✓ Successfully processed {success_count}/{len(forecast_hours)} forecast periods")
+
+    # If we got too few data points, fall back to sample data
+    if success_count < 5:
+        print("✗ Insufficient real data, using sample data")
+        return generate_sample_forecast_data()
+
+    # Interpolate 3-hourly data to hourly
+    print("Interpolating to hourly values...")
+    timestamps = []
+    hourly_snow = {'p10': [], 'p50': [], 'p90': [], 'p95': []}
+    hourly_precip = {'p10': [], 'p50': [], 'p90': [], 'p95': []}
+    snow_level = {'p10': [], 'p50': [], 'p90': [], 'p95': []}
+
+    for i in range(72):  # Generate 72 hourly values
+        hour = i + 1
+        valid_time = cycle_time + timedelta(hours=hour)
+        timestamps.append(valid_time.isoformat() + 'Z')
+
+        # Find surrounding 3-hourly data points
+        prev_idx = None
+        next_idx = None
+
+        for idx, point in enumerate(three_hourly_data):
+            if point['hour'] <= hour:
+                prev_idx = idx
+            if point['hour'] >= hour and next_idx is None:
+                next_idx = idx
+
+        if prev_idx is not None and next_idx is not None and prev_idx != next_idx:
+            # Interpolate between two points
+            prev_point = three_hourly_data[prev_idx]
+            next_point = three_hourly_data[next_idx]
+
+            # Linear interpolation factor
+            hour_diff = next_point['hour'] - prev_point['hour']
+            factor = (hour - prev_point['hour']) / hour_diff if hour_diff > 0 else 0
+
+            for key in ['p10', 'p50', 'p90', 'p95']:
+                # Distribute 3-hourly totals evenly across hours for precip/snow
+                hourly_snow[key].append(prev_point['snow'][key] / 3.0)
+                hourly_precip[key].append(prev_point['precip'][key] / 3.0)
+
+                # Interpolate snow level
+                snow_val = prev_point['snow_level'][key] + factor * (next_point['snow_level'][key] - prev_point['snow_level'][key])
+                snow_level[key].append(snow_val)
+        elif prev_idx is not None:
+            # Use previous point
+            point = three_hourly_data[prev_idx]
+            for key in ['p10', 'p50', 'p90', 'p95']:
+                hourly_snow[key].append(point['snow'][key] / 3.0)
+                hourly_precip[key].append(point['precip'][key] / 3.0)
+                snow_level[key].append(point['snow_level'][key])
+        else:
+            # No data, use zeros
             for key in ['p10', 'p50', 'p90', 'p95']:
                 hourly_snow[key].append(0)
                 hourly_precip[key].append(0)
                 snow_level[key].append(2000)
-
-    print(f"✓ Successfully processed {success_count}/{len(forecast_hours)} forecast hours")
 
     forecast_data = {
         'generated': datetime.utcnow().isoformat() + 'Z',

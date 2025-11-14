@@ -42,6 +42,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Fetch and process NBM data
+        timeout-minutes: 10
         run: |
           python scripts/fetch_nbm_data.py
 

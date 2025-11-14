@@ -182,6 +182,16 @@ def extract_data_at_point(grib_file, lat, lon):
         # 50th percentile = median
         # 90th percentile = 90% chance of exceeding
 
+        # Debug: Print first few variables
+        first_messages = []
+        for i, grb in enumerate(grbs):
+            if i < 5:
+                first_messages.append(f"{grb.name} - {grb}")
+        if first_messages:
+            print(f"    First GRIB messages: {'; '.join(first_messages[:3])}")
+
+        grbs.rewind()
+
         for grb in grbs:
             var_name = grb.name
             idx = find_nearest_point(grb, lat, lon)
@@ -254,8 +264,9 @@ def fetch_nbm_grib_data_incremental(cycle_time, lat, lon, state):
     print(f"Fetching NBM data for cycle: {cycle_time.strftime('%Y-%m-%d %H:%M UTC')}")
     print(f"Location: {lat}°N, {lon}°E")
 
-    # All forecast hours we want (every 3 hours for 72 hours)
-    all_forecast_hours = list(range(1, 73, 3))  # 1, 4, 7, 10, ... 70
+    # All forecast hours we want (first 24 hours only - hourly)
+    all_forecast_hours = list(range(1, 25))  # 1, 2, 3, ... 24
+    print(f"Will download {len(all_forecast_hours)} hourly forecast files (f001-f024)")
 
     # Get next batch to download
     hours_to_download = get_next_hours_to_download(state, cycle_time, all_forecast_hours)
@@ -272,13 +283,8 @@ def fetch_nbm_grib_data_incremental(cycle_time, lat, lon, state):
         prev_snow = {'p10': 0, 'p50': 0, 'p90': 0, 'p95': 0}
         prev_precip = {'p10': 0, 'p50': 0, 'p90': 0, 'p95': 0}
 
-        # Initialize accumulated values from existing data
-        if three_hourly_data:
-            last_point = three_hourly_data[-1]
-            for key in ['p10', 'p50', 'p90', 'p95']:
-                # Reconstruct accumulated values
-                prev_snow[key] = sum(p['snow'][key] for p in three_hourly_data) / 10  # reverse conversion
-                prev_precip[key] = sum(p['precip'][key] for p in three_hourly_data)
+        # Initialize accumulated values from existing data (if any)
+        # Note: Not needed for fresh runs but useful if resuming
 
         success_count = 0
         for fhr in hours_to_download:
@@ -302,22 +308,22 @@ def fetch_nbm_grib_data_incremental(cycle_time, lat, lon, state):
                     'snow_level': {}
                 }
 
-                # Calculate 3-hourly increments from accumulated values
+                # Calculate hourly increments from accumulated values
                 for key in ['p10', 'p50', 'p90', 'p95']:
                     # Snow (convert from kg/m² to mm, roughly 1:10 ratio for snow)
                     acc_snow = data['snow'].get(key, prev_snow.get(key, 0))
                     if acc_snow is None:
                         acc_snow = prev_snow.get(key, 0)
-                    three_hourly_val = max(0, acc_snow - prev_snow.get(key, 0))
-                    point_data['snow'][key] = three_hourly_val * 10  # Convert to mm snow
+                    hourly_val = max(0, acc_snow - prev_snow.get(key, 0))
+                    point_data['snow'][key] = hourly_val * 10  # Convert to mm snow
                     prev_snow[key] = acc_snow
 
                     # Precipitation (convert from kg/m² to mm, 1:1 ratio)
                     acc_precip = data['precip'].get(key, prev_precip.get(key, 0))
                     if acc_precip is None:
                         acc_precip = prev_precip.get(key, 0)
-                    three_hourly_val = max(0, acc_precip - prev_precip.get(key, 0))
-                    point_data['precip'][key] = three_hourly_val
+                    hourly_val = max(0, acc_precip - prev_precip.get(key, 0))
+                    point_data['precip'][key] = hourly_val
                     prev_precip[key] = acc_precip
 
                     # Snow level (already in meters)
@@ -348,54 +354,29 @@ def fetch_nbm_grib_data_incremental(cycle_time, lat, lon, state):
     elif len(three_hourly_data) < 8:
         print(f"⚠ Warning: Only {len(three_hourly_data)}/24 files processed, forecast quality reduced")
 
-    # Interpolate 3-hourly data to hourly
-    print("Interpolating to hourly values...")
+    # Map hourly data (no interpolation needed since we have hourly data)
+    print("Processing hourly values...")
     timestamps = []
     hourly_snow = {'p10': [], 'p50': [], 'p90': [], 'p95': []}
     hourly_precip = {'p10': [], 'p50': [], 'p90': [], 'p95': []}
     snow_level = {'p10': [], 'p50': [], 'p90': [], 'p95': []}
 
-    for i in range(72):  # Generate 72 hourly values
-        hour = i + 1
+    # Create a lookup dict for quick access
+    data_by_hour = {point['hour']: point for point in three_hourly_data}
+
+    for hour in range(1, 25):  # 24 hours
         valid_time = cycle_time + timedelta(hours=hour)
         timestamps.append(valid_time.isoformat() + 'Z')
 
-        # Find surrounding 3-hourly data points
-        prev_idx = None
-        next_idx = None
-
-        for idx, point in enumerate(three_hourly_data):
-            if point['hour'] <= hour:
-                prev_idx = idx
-            if point['hour'] >= hour and next_idx is None:
-                next_idx = idx
-
-        if prev_idx is not None and next_idx is not None and prev_idx != next_idx:
-            # Interpolate between two points
-            prev_point = three_hourly_data[prev_idx]
-            next_point = three_hourly_data[next_idx]
-
-            # Linear interpolation factor
-            hour_diff = next_point['hour'] - prev_point['hour']
-            factor = (hour - prev_point['hour']) / hour_diff if hour_diff > 0 else 0
-
+        if hour in data_by_hour:
+            # We have real data for this hour
+            point = data_by_hour[hour]
             for key in ['p10', 'p50', 'p90', 'p95']:
-                # Distribute 3-hourly totals evenly across hours for precip/snow
-                hourly_snow[key].append(prev_point['snow'][key] / 3.0)
-                hourly_precip[key].append(prev_point['precip'][key] / 3.0)
-
-                # Interpolate snow level
-                snow_val = prev_point['snow_level'][key] + factor * (next_point['snow_level'][key] - prev_point['snow_level'][key])
-                snow_level[key].append(snow_val)
-        elif prev_idx is not None:
-            # Use previous point
-            point = three_hourly_data[prev_idx]
-            for key in ['p10', 'p50', 'p90', 'p95']:
-                hourly_snow[key].append(point['snow'][key] / 3.0)
-                hourly_precip[key].append(point['precip'][key] / 3.0)
+                hourly_snow[key].append(point['snow'][key])
+                hourly_precip[key].append(point['precip'][key])
                 snow_level[key].append(point['snow_level'][key])
         else:
-            # No data, use zeros
+            # No data for this hour, use zeros/defaults
             for key in ['p10', 'p50', 'p90', 'p95']:
                 hourly_snow[key].append(0)
                 hourly_precip[key].append(0)
@@ -419,7 +400,7 @@ def generate_sample_forecast_data():
     """
     Generate sample forecast data as fallback.
     """
-    hours = 72  # 3-day forecast
+    hours = 24  # 24-hour forecast
     timestamps = []
     now = datetime.utcnow()
 

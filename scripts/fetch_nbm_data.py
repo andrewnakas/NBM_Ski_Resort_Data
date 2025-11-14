@@ -25,7 +25,7 @@ import time
 NBM_BASE_URL = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/blend/prod"
 
 # Configuration
-FILES_PER_RUN = 1  # Download only 1 file per run to avoid timeout
+FILES_PER_RUN = 24  # Download all files in one run
 
 # Create output directories
 os.makedirs('public/data', exist_ok=True)
@@ -292,7 +292,7 @@ def fetch_nbm_grib_data_incremental(cycle_time, lat, lon, state):
             # Extract data
             data = extract_data_at_point(grib_file, lat, lon)
 
-            if data and data['snow']:
+            if data and (data['snow'] or data['precip']):
                 success_count += 1
 
                 point_data = {
@@ -305,14 +305,18 @@ def fetch_nbm_grib_data_incremental(cycle_time, lat, lon, state):
                 # Calculate 3-hourly increments from accumulated values
                 for key in ['p10', 'p50', 'p90', 'p95']:
                     # Snow (convert from kg/m² to mm, roughly 1:10 ratio for snow)
-                    acc_snow = data['snow'].get(key, prev_snow[key])
-                    three_hourly_val = max(0, acc_snow - prev_snow[key])
+                    acc_snow = data['snow'].get(key, prev_snow.get(key, 0))
+                    if acc_snow is None:
+                        acc_snow = prev_snow.get(key, 0)
+                    three_hourly_val = max(0, acc_snow - prev_snow.get(key, 0))
                     point_data['snow'][key] = three_hourly_val * 10  # Convert to mm snow
                     prev_snow[key] = acc_snow
 
                     # Precipitation (convert from kg/m² to mm, 1:1 ratio)
-                    acc_precip = data['precip'].get(key, prev_precip[key])
-                    three_hourly_val = max(0, acc_precip - prev_precip[key])
+                    acc_precip = data['precip'].get(key, prev_precip.get(key, 0))
+                    if acc_precip is None:
+                        acc_precip = prev_precip.get(key, 0)
+                    three_hourly_val = max(0, acc_precip - prev_precip.get(key, 0))
                     point_data['precip'][key] = three_hourly_val
                     prev_precip[key] = acc_precip
 
@@ -322,6 +326,8 @@ def fetch_nbm_grib_data_incremental(cycle_time, lat, lon, state):
                 three_hourly_data.append(point_data)
                 state['downloaded_hours'].append(fhr)
                 state['downloaded_hours'].sort()
+            else:
+                print(f"  ⚠ Warning: No valid data extracted from hour {fhr}")
 
         if success_count > 0:
             print(f"\n✓ Successfully downloaded and processed {success_count} file(s)")
@@ -336,9 +342,11 @@ def fetch_nbm_grib_data_incremental(cycle_time, lat, lon, state):
     three_hourly_data.sort(key=lambda x: x['hour'])
 
     # If we have very little data, fall back to sample
-    if len(three_hourly_data) < 3:
-        print("✗ Insufficient real data, using sample data")
+    if len(three_hourly_data) < 1:
+        print("✗ No real data available, using sample data")
         return generate_sample_forecast_data()
+    elif len(three_hourly_data) < 8:
+        print(f"⚠ Warning: Only {len(three_hourly_data)}/24 files processed, forecast quality reduced")
 
     # Interpolate 3-hourly data to hourly
     print("Interpolating to hourly values...")

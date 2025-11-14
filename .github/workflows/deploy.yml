@@ -6,9 +6,9 @@ on:
       - 'claude/**'
       - main
   schedule:
-    # Run every 2 minutes to download all 24 GRIB files within an hour
-    # 24 files × 3 min per run = ~72 min, with 2-min intervals = complete in 1 hour
-    - cron: '*/2 * * * *'
+    # Run every hour to download complete 24-file dataset
+    # Downloads all 24 GRIB files in one run (~30-45 min per run)
+    - cron: '15 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -53,7 +53,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Fetch and process NBM data
-        timeout-minutes: 3
+        timeout-minutes: 60
         run: |
           python scripts/fetch_nbm_data.py
 

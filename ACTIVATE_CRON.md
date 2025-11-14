@@ -59,21 +59,20 @@ Once on `main`, the cron schedule activates automatically:
 
 ### Automatic Download Schedule
 
-- **Frequency:** Every 2 minutes
-- **Downloads:** 1 GRIB file per run
-- **Timeline:** All 24 files downloaded in ~50-60 minutes
-- **Updates:** Site updates after each successful download
+- **Frequency:** Every hour at :15 past the hour
+- **Downloads:** All 24 GRIB files per run
+- **Duration:** ~30-45 minutes per run
+- **Updates:** Site updates with complete dataset after each run
 
 ### Expected Behavior
 
 ```
-00:00 UTC - Cron triggers
-00:02 UTC - Run 1 completes (file 1/24)
-00:04 UTC - Run 2 completes (file 2/24)
-00:06 UTC - Run 3 completes (file 3/24)
+00:15 UTC - Cron triggers
+00:15 UTC - Downloads all 24 GRIB files
+00:45 UTC - Processing complete, site deployed ✓
+01:15 UTC - Next run starts (fresh data)
+02:15 UTC - Next run starts
 ...
-00:48 UTC - Run 24 completes (file 24/24) ✓
-00:50 UTC - Continues downloading from new cycle...
 ```
 
 ## Monitor Progress
@@ -86,27 +85,18 @@ https://andrewnakas.github.io/NBM_Ski_Resort_Data/
 
 ## Current Configuration
 
-- ⏰ **Cron:** `*/2 * * * *` (every 2 minutes)
-- 📦 **Files per run:** 1 GRIB file
-- ⏱️ **Run timeout:** 3 minutes
+- ⏰ **Cron:** `15 * * * *` (hourly at :15)
+- 📦 **Files per run:** 24 GRIB files (complete dataset)
+- ⏱️ **Run timeout:** 60 minutes
 - 💾 **State persistence:** GitHub Actions cache
 - 🔄 **Auto-cleanup:** Old cache files removed after 24 hours
 
-## Future Adjustments (Optional)
+## Note on Download Strategy
 
-If you want to change the download frequency later:
-
-**Slower (hourly updates):**
-```yaml
-cron: '15 * * * *'  # Once per hour at :15
-```
-
-**Faster (every minute - max speed):**
-```yaml
-cron: '* * * * *'  # Every minute
-```
-
-Edit `.github/workflows/deploy.yml` line 11 and push to main.
+This system downloads all 24 GRIB files in a single run:
+- ✅ **Pros:** Complete dataset every hour, simple and reliable
+- ⏱️ **Cons:** Each run takes 30-45 minutes
+- 🎯 **Best for:** Hourly updates with complete fresh data
 
 ---
 

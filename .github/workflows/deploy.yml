@@ -6,8 +6,9 @@ on:
       - 'claude/**'
       - main
   schedule:
-    # Run every hour at minute 15
-    - cron: '15 * * * *'
+    # TEMPORARY: Run every 5 minutes to quickly build complete dataset
+    # After 24 runs (~2 hours), change back to: '15 * * * *' for hourly updates
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 permissions:
